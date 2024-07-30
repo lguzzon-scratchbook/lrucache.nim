@@ -1,178 +1,122 @@
 import lists, tables, options
 
 type
-  LruCacheError* = object of CatchableError
-
-  EmptyLruCacheError* = object of LruCacheError
-
-  # no need to use ref, since DoublyLinkedNode is already a ref
-  Node[K,T] = object
+  LruCacheNode[K, T] = object
     key: K
-    val: T
+    value: T
 
-  LruCache*[K, T] = ref object 
+  LruCache[K, T] = ref object
     capacity: int
-    list: DoublyLinkedList[Node[K,T]]
-    table: Table[K, DoublyLinkedNode[Node[K,T]]]
+    nodes: DoublyLinkedList[LruCacheNode[K, T]]
+    nodeTable: Table[K, DoublyLinkedNode[LruCacheNode[K, T]]]
 
-proc correctSize(cap: int): int {.inline.} =
-  # for backward compatibility
+template correctSize(capacity: int): int =
   when declared(rightSize) and (NimMajor, NimMinor) < (1, 4):
-    rightSize(cap)
+    rightSize(capacity)
   else:
-    cap
+    capacity
 
-proc newLruCache*[K,T](capacity: int): LruCache[K,T] =
-  ## Create a new Least-Recently-Used (LRU) cache that store the last `capacity`-accessed items.
-  LruCache[K,T](
+proc newLruCache*[K, T](capacity: int): LruCache[K, T] =
+  LruCache[K, T](
     capacity: capacity,
-    list: initDoublyLinkedList[Node[K,T]](),
-    table: initTable[K, DoublyLinkedNode[Node[K,T]]]( correctSize(capacity) )
+    nodes: initDoublyLinkedList[LruCacheNode[K, T]](),
+    nodeTable: initTable[K, DoublyLinkedNode[LruCacheNode[K, T]]](correctSize(capacity))
   )
 
-proc len*[K,T](cache: LruCache[K,T]): int =
-  ## Return number of key in cache
-  cache.table.len
-
-proc resize[K,T](cache: LruCache[K,T]) =
+proc resize[K, T](cache: LruCache[K, T]) =
   while cache.len > cache.capacity:
-    let t = cache.list.tail
-    cache.table.del(t.value.key)
-    cache.list.remove t
+    let tail = cache.nodes.tail
+    cache.nodeTable.del(tail.value.key)
+    cache.nodes.remove(tail)
 
-proc addNewNode[K,T](cache: LruCache[K,T], key: K, val: T) =
-  # create new node 
-  let node = newDoublyLinkedNode[Node[K,T]](
-    Node[K,T](key: key, val: val)
-  )
-  # put on table and prepend new node 
-  cache.table[key] = node
-  cache.list.prepend node
-  # remove old node if exceed capacity
+proc addNode[K, T](cache: LruCache[K, T], key: K, value: T) =
+  let node = newDoublyLinkedNode(LruCacheNode[K, T](key: key, value: value))
+  cache.nodeTable[key] = node
+  cache.nodes.prepend(node)
   cache.resize()
 
-proc capacity*[K,T](cache: LruCache[K,T]): int = 
-  ## Get the maximum capacity of cache
+template capacity*[K, T](cache: LruCache[K, T]): int =
   cache.capacity
 
-proc `capacity=`*[K,T](cache: LruCache[K,T], capacity: int) = 
-  ## Resize the maximum capacity of cache
+proc `capacity=`*[K, T](cache: LruCache[K, T], capacity: int) =
   cache.capacity = capacity
   cache.resize()
 
-proc contains*[K,T](cache: LruCache[K,T], key: K): bool =
-  ## Check whether key in cache. Does *NOT* update recentness.
-  cache.table.contains(key)
+template contains*[K, T](cache: LruCache[K, T], key: K): bool =
+  cache.nodeTable.contains(key)
 
-proc peek*[K,T](cache: LruCache[K,T], key: K): T =
-  ## Read value by key, but *NOT* update recentness.
-  ## Raise `KeyError` if `key` is not in `cache`.
-  let node = cache.table[key] 
-  result = node.value.val
+template peek*[K, T](cache: LruCache[K, T], key: K): T =
+  cache.nodeTable[key].value.value
 
-proc del*[K,T](cache: LruCache[K,T], key: K) =
-  ## Delete key in cache. Does nothing if key is not in cache.
-  let node = cache.table.getOrDefault(key, nil)
+proc del*[K, T](cache: LruCache[K, T], key: K) =
+  let node = cache.nodeTable.getOrDefault(key, nil)
   if not node.isNil:
-    cache.table.del(key)
-    cache.list.remove(node)
+    cache.nodeTable.del(key)
+    cache.nodes.remove(node)
 
-proc clear*[K,T](cache: LruCache[K,T]) =
-  ## remove all items
-  cache.list = initDoublyLinkedList[Node[K,T]]()
-  cache.table.clear()
+proc clear*[K, T](cache: LruCache[K, T]) =
+  cache.nodes = initDoublyLinkedList[LruCacheNode[K, T]]()
+  cache.nodeTable.clear()
 
-proc `[]`*[K,T](cache: LruCache[K,T], key: K): T =
-  ## Read value from `cache` by `key` and update recentness
-  ## Raise `KeyError` if `key` is not in `cache`.
-  let node = cache.table[key]        # may raise KeyError
-  result = node.value.val
-  cache.list.remove node
-  cache.list.prepend node
+proc `[]`*[K, T](cache: LruCache[K, T], key: K): T =
+  let node = cache.nodeTable[key]
+  result = node.value.value
+  cache.nodes.remove(node)
+  cache.nodes.prepend(node)
 
-proc `[]=`*[K,T](cache: LruCache[K,T], key: K, val: T) =
-  ## Put value `v` in cache with key `k`.
-  ## Remove least recently used value from cache if length exceeds capacity.
-  
-  # read current node
-  var node = cache.table.getOrDefault(key, nil)
+proc `[]=`*[K, T](cache: LruCache[K, T], key: K, value: T) =
+  let node = cache.nodeTable.getOrDefault(key, nil)
   if node.isNil:
-    cache.addNewNode(key, val)
+    cache.addNode(key, value)
   else:
-    # set value 
-    node.value.val = val
-    # move to head
-    cache.list.remove node
-    cache.list.prepend node
-    
-proc get*[K,T](cache: LruCache[K,T], key: K): T = 
-  ## Alias of `cache[key]`
-  cache[key]
+    node.value.value = value
+    cache.nodes.remove(node)
+    cache.nodes.prepend(node)
 
-proc put*[K,T](cache: LruCache[K,T], key: K, val: T): T =
-  ## Alias of `cache[key] = val`
-  cache[key] = val
-  
-proc getOrDefault*[K,T](cache: LruCache[K,T], key: K, val: T): T =
-  ## Similar to get, but return `val` if `key` is not in `cache`
-  let node = cache.table.getOrDefault(key, nil)
+proc getOrDefault*[K, T](cache: LruCache[K, T], key: K, default: T): T =
+  let node = cache.nodeTable.getOrDefault(key, nil)
   if node.isNil:
-    result = val
+    default
   else:
-    result = node.value.val
+    node.value.value
 
-proc getOrPut*[K,T](cache: LruCache[K,T], key: K, val: T): T =
-  ## Similar to `get`, but put and return `val` if `key` is not in `cache`
-  let node = cache.table.getOrDefault(key, nil)
-  if not node.isNil:
-    result = node.value.val
+proc getOrPut*[K, T](cache: LruCache[K, T], key: K, default: T): T =
+  let node = cache.nodeTable.getOrDefault(key, nil)
+  if node.isNil:
+    result = default
+    cache.addNode(key, default)
   else:
-    result = val
-    cache.addNewNode(key, val)
+    result = node.value.value
 
-proc getOption*[K,T](cache: LruCache[K,T], key: K): Option[T] =
-  ## Similar to `get`, but return `None` if `key` is not in `cache` 
-  ## or else return `Some(value)` and update recentness
-  let node = cache.table.getOrDefault(key, nil)
-  if node.isNil: none(T)
-  else: some(node.value.val)
+proc getOption*[K, T](cache: LruCache[K, T], key: K): Option[T] =
+  let node = cache.nodeTable.getOrDefault(key, nil)
+  if node.isNil:
+    none(T)
+  else:
+    some(node.value.value)
 
-proc isEmpty*[K,T](cache: LruCache[K,T]): bool {.inline.} = 
-  ## Equivalent to `cache.len == 0`
+iterator items*[K, T](cache: LruCache[K, T]): T =
+  for node in cache.nodes:
+    yield node.value.value
+
+template len*[K, T](cache: LruCache[K, T]): int =
+  cache.nodeTable.len
+
+template isEmpty*[K, T](cache: LruCache[K, T]): bool =
   cache.len == 0
 
-proc isFull*[K,T](cache: LruCache[K,T]): bool {.inline.} = 
-  ## Equivalent to `cache.len == cache.capacity`
-  ## Raise `EmptyLruCacheError` if `cache` is empty.
+template isFull*[K, T](cache: LruCache[K, T]): bool =
   cache.len == cache.capacity
 
-proc getMruKey*[K,T](cache: LruCache[K,T]): K =
-  ## Return most recently used key.
-  ## Raise `EmptyLruCacheError` if `cache` is empty.
-  if cache.isEmpty:
-    raise newException(EmptyLruCacheError, "Cannot get most recently used key from empty cache")
-  cache.list.head.value.key
+template getMruKey*[K, T](cache: LruCache[K, T]): K =
+  cache.nodes.head.value.key
 
-proc getMruValue*[K,T](cache: LruCache[K,T]): T =
-  ## Return most recently used value.
-  ## Raise `EmptyLruCacheError` if `cache` is empty.
-  if cache.isEmpty:
-    raise newException(EmptyLruCacheError, "Cannot get most recently used value from empty cache")
-  cache.list.head.value.val
+template getMruValue*[K, T](cache: LruCache[K, T]): T =
+  cache.nodes.head.value.value
 
-proc getLruKey*[K,T](cache: LruCache[K,T]): K =
-  ## Return least recently used key.
-  ## Raise `EmptyLruCacheError` if `cache` is empty.
-  if cache.isEmpty:
-    raise newException(EmptyLruCacheError, "Cannot get least recently used key from empty cache")
-  cache.list.tail.value.key
+template getLruKey*[K, T](cache: LruCache[K, T]): K =
+  cache.nodes.tail.value.key
 
-proc getLruValue*[K,T](cache: LruCache[K,T]): T =
-  ## Return least recently used value.
-  ## Raise `EmptyLruCacheError` if `cache` is empty.
-  if cache.isEmpty:
-    raise newException(EmptyLruCacheError, "Cannot get least recently used value from empty cache")
-  cache.list.tail.value.val
+template getLruValue*[K, T](cache: LruCache[K, T]): T =
+  cache.nodes.tail.value.value
 
-
-   
